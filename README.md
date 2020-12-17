@@ -1,4 +1,5 @@
-# AzureActiveDirectory
+# Azure Active Directory: Automating Guest User Management
+
 
 Application Development Manager Francis Lacroix discusses how to use Azure Automation and Microsoft Graph to determine which users are inviting guests into Azure Active Directory, audit guest logins, and disable unused guest identities.
 
