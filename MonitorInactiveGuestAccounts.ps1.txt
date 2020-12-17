@@ -1,0 +1,100 @@
+#Set the variables for this Runbook
+$connectionName = "AzureRunAsConnection"
+$emailCredentialsName = "EmailCredentials"
+$smtpServerVariableName ="SMTPServerAddress"
+$fromAddressVariableName = "FromAddress"
+
+$queryStartDateTime = (Get-Date).AddDays(-7)
+$queryStartDateTimeFilter = '{0:yyyy-MM-dd}T{0:HH:mm:sszzz}' -f $queryStartDateTime
+
+$subject = "Inactive guest user - {0}"
+$body = "{0} has been inactive for over 7 days. Please validate that {0} requires guest access and if not, remove them."
+
+#Get the Connection
+try
+{
+    # Get the connection for this runbook
+    $servicePrincipalConnection = Get-AutomationConnection -Name $connectionName         
+
+    # Connect to AzureAD using the Service Principal
+    Write-Output "Logging in to AzureAD"
+    Connect-AzureAD -TenantId $servicePrincipalConnection.TenantId -ApplicationId  $servicePrincipalConnection.ApplicationId -CertificateThumbprint $servicePrincipalConnection.CertificateThumbprint
+}
+catch {
+    if (!$servicePrincipalConnection)
+    {
+        $ErrorMessage = "Connection $connectionName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get the email Credentials
+try
+{
+    # Get the credentials for email
+    $emailCredentials = Get-AutomationPSCredential -Name $emailCredentialsName         
+}
+catch {
+    if (!$emailCredentials)
+    {
+        $ErrorMessage = "Credentials $emailCredentials not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get the email variables
+try
+{
+    #Get the variable holding the last successful run
+    $smtpServer = Get-AutomationVariable -Name $smtpServerVariableName
+    $fromAddress = Get-AutomationVariable -Name $fromAddressVariableName
+}
+catch {
+    if (!$smtpServer)
+    {
+        $ErrorMessage = "Variable $smtpServerVariableName not found."
+        throw $ErrorMessage
+    } elseif (!$fromAddress)
+    {
+        $ErrorMessage = "Variable $fromAddressVariableName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get all the Guest Users
+$guestUsers = Get-AzureADUser -Filter "UserType eq 'Guest' and AccountEnabled eq true"
+
+#For each Guest user, validate there is a login in the last week
+foreach ($guestUser in $guestUsers)
+{
+    Write-Output "Getting User's logins for the last week"
+    $guestUserSignIns = Get-AzureADAuditSignInLogs -Filter "UserID eq '$($guestUser.ObjectID)' and createdDateTime ge $queryStartDateTimeFilter"
+
+    if ($guestUserSignIns -eq $null)
+    {
+        Write-Output "No logins, blocking sign-in and sending email to manager"
+
+        #Block Sign-In
+        Set-AzureADUser -ObjectID $guestUser.ObjectID -AccountEnabled $false
+
+        #Get the manager
+        $manager = Get-AzureADUserManager -ObjectID $guestUser.ObjectID
+
+        #Format the subject and body
+        $targettedSubject = $subject -f $guestUser.DisplayName
+        $targettedBody = $body -f $guestUser.DisplayName
+
+        Send-MailMessage -To $manager.OtherMails[0] -Subject $targettedSubject -Body $targettedBody -From $fromAddress -SmtpServer $smtpServer -Credential $emailCredentials -Port 587 -UseSSL
+   }
+}
+
+

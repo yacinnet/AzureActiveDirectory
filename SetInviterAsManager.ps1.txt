@@ -1,0 +1,84 @@
+#Set the variables for this Runbook
+$connectionName = "AzureRunAsConnection"
+$lastRunVariableName = "InviterAsManagerLastRun"
+
+#Connect to AzureAD
+try
+{
+    #Get the connection for this runbook
+    $servicePrincipalConnection = Get-AutomationConnection -Name $connectionName         
+
+    #Connect to AzureAD using the Service Principal
+    Write-Output "Logging in to AzureAD"
+    Connect-AzureAD -TenantId $servicePrincipalConnection.TenantId -ApplicationId  $servicePrincipalConnection.ApplicationId -CertificateThumbprint $servicePrincipalConnection.CertificateThumbprint
+}
+catch {
+    if (!$servicePrincipalConnection)
+    {
+        $ErrorMessage = "Connection $connectionName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get the last successful run date and time
+try
+{
+    #Get the variable holding the last successful run
+    $lastRunDateTime = Get-AutomationVariable -Name $lastRunVariableName         
+
+    #Create the required filter.
+    $queryStartDateTimeFilter = '{0:yyyy-MM-dd}T{0:HH:mm:sszzz}' -f $lastRunDateTime
+}
+catch {
+    if (!$lastRunDateTime)
+    {
+        $ErrorMessage = "Variable $lastRunVariableName not found."
+        throw $ErrorMessage
+    } else{
+        Write-Error -Message $_.Exception
+        throw $_.Exception
+    }
+}
+
+#Get the logs for all newly added users
+Write-Output "Getting Audit Logs since $queryStartDateTimeFilter"
+$queryStartDateTime = Get-Date
+
+$addedUserEvents = Get-AzureADAuditDirectoryLogs -Filter "ActivityDisplayName eq 'Add user' and ActivityDateTime ge $queryStartDateTimeFilter"
+
+#Processing added users
+foreach ($addedUserEvent in $addedUserEvents)
+{
+    Write-Output "Processing added user event"
+
+    #Get the inviter reference from the InitiatedBy field
+    $inviterId = $addedUserEvent.InitiatedBy.User.Id
+
+    #For each TargetResources, check to see if it's a guest user, and if so, add its Manager
+    foreach ($targetResource in $addedUserEvent.TargetResources)
+    {
+        Write-Output "Processing target resource"
+        $addedUser = Get-AzureADUser -ObjectID $targetResource.Id
+        
+        if ($addedUser.UserType -eq "Guest")
+        {
+            Write-Output "Setting manager on guest user"
+            Set-AzureADUserManager -ObjectID $addedUser.ObjectId -RefObjectID $inviterId
+        }
+    }
+}
+
+#Set the last successful run date and time
+try
+{
+    #Get the variable holding the last successful run
+    Write-Output "Updating LastRun to $queryStartDateTime"
+    Set-AutomationVariable -Name $lastRunVariableName -Value $queryStartDateTime
+}
+catch {
+    Write-Error -Message $_.Exception
+    throw $_.Exception
+}
